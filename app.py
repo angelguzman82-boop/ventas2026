@@ -9,13 +9,11 @@ archivo = st.file_uploader("Sube el Excel de ventas", type=["xlsx"])
 
 if archivo:
     df = pd.read_excel(archivo)
-
-    # Limpiar nombres de columnas (espacios invisibles)
     df.columns = df.columns.str.strip()
 
     st.write("Columnas detectadas:", df.columns)
 
-    # -------- DETECCIÓN FLEXIBLE DE COLUMNAS --------
+    # -------- DETECCIÓN DE COLUMNAS --------
     cliente_col = None
     provincia_col = None
     fecha_col = None
@@ -45,43 +43,39 @@ if archivo:
         if "tel" in col_lower or "movil" in col_lower:
             telefono_col = col
 
-    # Verificación obligatoria
-    if not cliente_col:
-        st.error("No se detectó columna Cliente")
+    # Validaciones mínimas
+    if not cliente_col or not provincia_col or not fecha_col or not kw_col:
+        st.error("Faltan columnas obligatorias (Cliente, Provincia, Fecha o kW).")
         st.stop()
 
-    if not provincia_col:
-        st.error("No se detectó columna Provincia")
-        st.stop()
-
-    if not fecha_col:
-        st.error("No se detectó columna Fecha")
-        st.stop()
-
-    if not kw_col:
-        st.error("No se detectó columna kW")
-        st.stop()
-
-    # -------- LIMPIEZA DE DATOS --------
-
+    # -------- LIMPIEZA --------
     df[fecha_col] = pd.to_datetime(df[fecha_col], errors="coerce")
     df[kw_col] = pd.to_numeric(df[kw_col], errors="coerce").fillna(0)
 
-    # Crear nombre completo
+    # Nombre completo
     if nombre_col and apellido_col:
-        df["Nombre completo"] = (
+        df["Nombre"] = (
             df[nombre_col].fillna("").astype(str) + " " +
             df[apellido_col].fillna("").astype(str)
         )
     else:
-        df["Nombre completo"] = "No disponible"
+        df["Nombre"] = ""
+
+    if email_col:
+        df["Email"] = df[email_col]
+    else:
+        df["Email"] = ""
+
+    if telefono_col:
+        df["Teléfono"] = df[telefono_col]
+    else:
+        df["Teléfono"] = ""
 
     # -------- AGRUPAR VENTAS --------
-
     ventas = (
-        df.groupby([cliente_col, provincia_col, fecha_col])
-        .agg(volumen_total=(kw_col, "sum"))
-        .reset_index()
+        df.groupby([cliente_col, provincia_col, fecha_col])[kw_col]
+        .sum()
+        .reset_index(name="volumen_total")
     )
 
     resumen = (
@@ -94,39 +88,21 @@ if archivo:
         .reset_index()
     )
 
-    # -------- DATOS DE CONTACTO --------
-
-    contactos_dict = {
-        cliente_col: cliente_col,
-        "Nombre": ("Nombre completo", "first")
-    }
-
-    if email_col:
-        contactos_dict["Email"] = (email_col, "first")
-    else:
-        df["Email_tmp"] = ""
-        contactos_dict["Email"] = ("Email_tmp", "first")
-
-    if telefono_col:
-        contactos_dict["Teléfono"] = (telefono_col, "first")
-    else:
-        df["Tel_tmp"] = ""
-        contactos_dict["Teléfono"] = ("Tel_tmp", "first")
-
+    # -------- CONTACTO (primer registro por cliente) --------
     contactos = (
         df.groupby(cliente_col)
-        .agg(**contactos_dict)
+        .first()
         .reset_index()
+        [[cliente_col, "Nombre", "Email", "Teléfono"]]
     )
 
     # -------- UNIR TODO --------
-
     resultado = resumen.merge(contactos, on=cliente_col, how="left")
 
     provincias = sorted(resultado[provincia_col].dropna().unique())
 
     if not provincias:
-        st.warning("No hay provincias disponibles")
+        st.warning("No hay provincias disponibles.")
         st.stop()
 
     provincia_sel = st.selectbox("Selecciona Provincia", provincias)
@@ -134,15 +110,5 @@ if archivo:
     tabla = resultado[resultado[provincia_col] == provincia_sel]
     tabla = tabla.sort_values(by="volumen_total", ascending=False)
 
-    columnas_mostrar = [
-        cliente_col,
-        "Nombre",
-        "Email",
-        "Teléfono",
-        "volumen_total",
-        "numero_compras",
-        "ultima_compra"
-    ]
-
     st.subheader("Clientes y Contactos")
-    st.dataframe(tabla[columnas_mostrar], use_container_width=True)
+    st.dataframe(tabla, use_container_width=True)
