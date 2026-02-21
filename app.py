@@ -9,86 +9,107 @@ archivo = st.file_uploader("Sube el Excel de ventas", type=["xlsx"])
 
 if archivo:
     df = pd.read_excel(archivo)
-
-    # Limpiar nombres de columnas (quita espacios invisibles)
     df.columns = df.columns.str.strip()
 
-    # Mostrar columnas para depuración (puedes borrar esto luego)
     st.write("Columnas detectadas:", df.columns)
 
-    # Convertir fecha correctamente
-    df["Fecha factura"] = pd.to_datetime(df["Fecha factura"], errors="coerce")
+    # --- DETECCIÓN AUTOMÁTICA DE COLUMNAS ---
+    cliente_col = None
+    provincia_col = None
+    fecha_col = None
+    kw_col = None
+    nombre_col = None
+    apellido_col = None
+    email_col = None
+    telefono_col = None
 
-    # Crear nombre completo del contacto (evita errores si hay celdas vacías)
-    df["Contacto"] = (
-        df["Nombre"].fillna("").astype(str) + " " +
-        df["Apellido"].fillna("").astype(str)
-    )
+    for col in df.columns:
+        col_lower = col.lower()
 
-    # Agrupar ventas por cliente y fecha (consolidar productos)
+        if "cliente" in col_lower:
+            cliente_col = col
+        if "provincia" in col_lower:
+            provincia_col = col
+        if "fecha" in col_lower:
+            fecha_col = col
+        if "kw" in col_lower:
+            kw_col = col
+        if "nombre" in col_lower:
+            nombre_col = col
+        if "apellido" in col_lower:
+            apellido_col = col
+        if "mail" in col_lower or "correo" in col_lower:
+            email_col = col
+        if "tel" in col_lower or "movil" in col_lower:
+            telefono_col = col
+
+    if not all([cliente_col, provincia_col, fecha_col, kw_col]):
+        st.error("No se detectaron correctamente las columnas necesarias.")
+        st.stop()
+
+    # Convertir fecha
+    df[fecha_col] = pd.to_datetime(df[fecha_col], errors="coerce")
+
+    # Crear nombre completo
+    if nombre_col and apellido_col:
+        df["Nombre completo"] = (
+            df[nombre_col].fillna("").astype(str) + " " +
+            df[apellido_col].fillna("").astype(str)
+        )
+    else:
+        df["Nombre completo"] = "No disponible"
+
+    # --- AGRUPAR DATOS ---
     ventas = (
-        df.groupby(["Cliente", "Provincia", "Fecha factura"])
-        .agg(volumen_total=("kW", "sum"))
+        df.groupby([cliente_col, provincia_col, fecha_col])
+        .agg(volumen_total=(kw_col, "sum"))
         .reset_index()
     )
 
-    # Resumen por cliente
     resumen = (
-        ventas.groupby(["Cliente", "Provincia"])
+        ventas.groupby([cliente_col, provincia_col])
         .agg(
             volumen_total=("volumen_total", "sum"),
-            numero_compras=("Fecha factura", "count"),
-            ultima_compra=("Fecha factura", "max")
+            numero_compras=(fecha_col, "count"),
+            ultima_compra=(fecha_col, "max")
         )
         .reset_index()
-        .sort_values(by="volumen_total", ascending=False)
     )
 
-    provincias = sorted(resumen["Provincia"].dropna().unique())
+    # Añadir datos de contacto (tomamos el primero disponible por cliente)
+    contactos = (
+        df.groupby(cliente_col)
+        .agg(
+            nombre=("Nombre completo", "first"),
+            email=(email_col, "first") if email_col else ("Nombre completo", "first"),
+            telefono=(telefono_col, "first") if telefono_col else ("Nombre completo", "first")
+        )
+        .reset_index()
+    )
+
+    # Unir resumen con contactos
+    resultado = resumen.merge(contactos, on=cliente_col, how="left")
+
+    provincias = sorted(resultado[provincia_col].dropna().unique())
 
     if provincias:
         provincia = st.selectbox("Selecciona Provincia", provincias)
 
-        clientes = resumen[resumen["Provincia"] == provincia]
+        tabla = resultado[resultado[provincia_col] == provincia]
 
-        st.subheader("Clientes")
-        st.dataframe(clientes, use_container_width=True)
+        # Ordenar por volumen
+        tabla = tabla.sort_values(by="volumen_total", ascending=False)
 
-        if not clientes.empty:
-            cliente_sel = st.selectbox("Selecciona Cliente", clientes["Cliente"])
+        # Seleccionar columnas finales a mostrar
+        columnas_finales = [
+            cliente_col,
+            "nombre",
+            "email",
+            "telefono",
+            "volumen_total",
+            "numero_compras",
+            "ultima_compra"
+        ]
 
-            if cliente_sel:
-                st.divider()
-
-                datos = clientes[clientes["Cliente"] == cliente_sel].iloc[0]
-
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Volumen Total (kW)", round(datos["volumen_total"], 2))
-                col2.metric("Número de Compras", int(datos["numero_compras"]))
-                col3.metric(
-                    "Última Compra",
-                    datos["ultima_compra"].date()
-                    if pd.notnull(datos["ultima_compra"])
-                    else "Sin datos"
-                )
-
-                st.subheader("Histórico de Compras")
-
-                historial = ventas[ventas["Cliente"] == cliente_sel]
-                st.dataframe(
-                    historial.sort_values(by="Fecha factura", ascending=False),
-                    use_container_width=True
-                )
-
-                st.subheader("👤 Contactos")
-
-                contactos = df[df["Cliente"] == cliente_sel][
-                    ["Contacto", "Email", "Teléfono"]
-                ].drop_duplicates()
-
-                if not contactos.empty:
-                    st.dataframe(contactos, use_container_width=True)
-                else:
-                    st.info("No hay contactos disponibles.")
-    else:
-        st.warning("No se detectaron provincias válidas.")
+        st.subheader("Clientes y Contactos")
+        st.dataframe(tabla[columnas_finales], use_container_width=True)
